@@ -9,6 +9,7 @@ set(executables
     crl_app
     load_roots
     req_app
+	rngd_cert_app
 )
 add_dependencies(${programs_target} ${executables})
 
