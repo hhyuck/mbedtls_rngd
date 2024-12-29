@@ -1,14 +1,12 @@
 /*
- *  Certificate request generation
+ *  RNGD CERT APP
  *
- *  Copyright The Mbed TLS Contributors
  *  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
  */
 
 #include "mbedtls/build_info.h"
 
 #include "mbedtls/platform.h"
-/* md.h is included this early since MD_CAN_XXX macros are defined there. */
 #include "mbedtls/md.h"
 
 #include "mbedtls/x509_crt.h"
@@ -17,17 +15,38 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
 #include "mbedtls/oid.h"
-//#include "test/helpers.h"
+#include "mbedtls/asn1write.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
+#define FORMAT_PEM              0
+#define FORMAT_DER              1
+
+/**
+ * DEVICE_INFO
+ * { iso(1) identified-organization(3) dod(6) internet(1)
+ *                      private(4) enterprise(1) dmtf(412) 274 1 }
+*/
+
+#define SPDM_OID_DEVICE_INFO	MBEDTLS_OID_INTERNET "\x04\x01\x83\x1c\x82\x12\x01"
+
+#define CHECK_OVERFLOW_ADD(a, b) \
+    do                         \
+    {                           \
+        if (a > SIZE_MAX - (b)) \
+        { \
+            return MBEDTLS_ERR_X509_BAD_INPUT_DATA; \
+        }                            \
+        a += b; \
+    } while (0)
+
 #define SET_OID(x, oid) \
     do { x.len = MBEDTLS_OID_SIZE(oid); x.p = (unsigned char *) oid; } while (0)
 
-#define RNGD_CERT_APP_DEFAULT_FILENAME				"RNGD.key"
+#define RNGD_CERT_APP_DEFAULT_KEY_FILENAME			"RNGD.key"
 #define RNGD_CERT_APP_DEFAULT_PASSWORD				NULL
 #define RNGD_CERT_APP_DEFAULT_CSR_OUTPUT_FILENAME	"RNGD.req"
 #define RNGD_CERT_APP_DEFAULT_CRT_OUTPUT_FILENAME	"RNGD.crt"
@@ -72,7 +91,7 @@ static int write_certificate_request(mbedtls_x509write_csr *req, const char *out
 
 static int write_certificate(mbedtls_x509write_cert *crt, const char *output_file,
 		int (*f_rng)(void *, unsigned char *, size_t),
-		void *p_rng) {
+		void *p_rng, int format) {
 	int ret;
 	FILE *f;
 	unsigned char output_buf[4096];
@@ -80,25 +99,25 @@ static int write_certificate(mbedtls_x509write_cert *crt, const char *output_fil
 	size_t len = 0;
 
 	memset(output_buf, 0, 4096);
-	/*if (opt.format == FORMAT_DER) {
-	  ret = mbedtls_x509write_crt_der(crt, output_buf, 4096,
-	  f_rng, p_rng);
-	  if (ret < 0) {
-	  return ret;
-	  }
+	if (format == FORMAT_DER) {
+		ret = mbedtls_x509write_crt_der(crt, output_buf, 4096,
+				f_rng, p_rng);
+		if (ret < 0) {
+			return ret;
+		}
 
-	  len = ret;
-	  output_start = output_buf + 4096 - len;
-	  } else {*/
-	ret = mbedtls_x509write_crt_pem(crt, output_buf, 4096,
-			f_rng, p_rng);
-	if (ret < 0) {
-		return ret;
+		len = ret;
+		output_start = output_buf + 4096 - len;
+	} else {
+		ret = mbedtls_x509write_crt_pem(crt, output_buf, 4096,
+				f_rng, p_rng);
+		if (ret < 0) {
+			return ret;
+		}
+
+		len = strlen((char *) output_buf);
+		output_start = output_buf;
 	}
-
-	len = strlen((char *) output_buf);
-	output_start = output_buf;
-	//}
 
 	if ((f = fopen(output_file, "w")) == NULL) {
 		return -1;
@@ -170,6 +189,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	size_t serial_len;
 	mbedtls_asn1_sequence *ext_key_usage, *ext_key_usage_tmp;
 	mbedtls_asn1_sequence **tail = &ext_key_usage;
+	mbedtls_x509_san_other_name rngd_other_name;
 
 	mbedtls_x509write_csr_init(&req);
 	mbedtls_pk_init(&key);
@@ -233,7 +253,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	mbedtls_printf("  . Loading the private key ...");
 	fflush(stdout);
 
-	ret = mbedtls_pk_parse_keyfile(&key, RNGD_CERT_APP_DEFAULT_FILENAME, RNGD_CERT_APP_DEFAULT_PASSWORD,
+	ret = mbedtls_pk_parse_keyfile(&key, RNGD_CERT_APP_DEFAULT_KEY_FILENAME, RNGD_CERT_APP_DEFAULT_PASSWORD,
 			mbedtls_ctr_drbg_random, &ctr_drbg);
 
 	if (ret != 0) {
@@ -254,10 +274,10 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	if ((ret = write_certificate_request(&req, RNGD_CERT_APP_DEFAULT_CSR_OUTPUT_FILENAME,
 					mbedtls_ctr_drbg_random, &ctr_drbg)) != 0) {
 		mbedtls_printf(" failed\n  !  write_certificate_request %d", ret);
-		//goto exit;
-
-		return ret;
+		goto exit;
 	}
+
+	mbedtls_printf(" ok\n");
 
 	/*
 	 * 2.1. Load the CSR
@@ -375,21 +395,6 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 
 	mbedtls_printf(" ok\n");
 
-	mbedtls_printf("  . Adding the Authority Key Identifier ...");
-	fflush(stdout);
-
-	ret = mbedtls_x509write_crt_set_authority_key_identifier(&crt);
-	if (ret != 0) {
-		mbedtls_strerror(ret, buf, sizeof(buf));
-		mbedtls_printf(" failed\n  !  mbedtls_x509write_crt_set_authority_"
-				"key_identifier returned -0x%04x - %s\n\n",
-				(unsigned int) -ret, buf);
-		goto exit;
-	}
-
-	mbedtls_printf(" ok\n");
-
-
 	mbedtls_printf("  . Adding the Key Usage extension ...");
 	fflush(stdout);
 
@@ -439,13 +444,82 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	mbedtls_printf(" ok\n");
 
 	/*
-	 * 2.10. Writing the certificate
+	 * 2.4 X509v3 Subject Alternative Name
+	 */
+	
+
+	rngd_other_name.type_id.tag = MBEDTLS_ASN1_OID;
+	rngd_other_name.type_id.len = MBEDTLS_OID_SIZE(MBEDTLS_OID_ON_HW_MODULE_NAME);
+	rngd_other_name.type_id.p = mbedtls_calloc(1, rngd_other_name.type_id.len);
+	memcpy(rngd_other_name.type_id.p, MBEDTLS_OID_ON_HW_MODULE_NAME, rngd_other_name.type_id.len);
+
+	rngd_other_name.value.hardware_module_name.oid.tag = MBEDTLS_ASN1_OID;
+	rngd_other_name.value.hardware_module_name.oid.len = MBEDTLS_OID_SIZE(SPDM_OID_DEVICE_INFO);
+	rngd_other_name.value.hardware_module_name.oid.p = mbedtls_calloc(1, rngd_other_name.value.hardware_module_name.oid.len);
+	memcpy(rngd_other_name.value.hardware_module_name.oid.p, SPDM_OID_DEVICE_INFO, rngd_other_name.value.hardware_module_name.oid.len);
+
+	rngd_other_name.value.hardware_module_name.val.tag = MBEDTLS_ASN1_OCTET_STRING;	
+	rngd_other_name.value.hardware_module_name.val.len = strlen("FuriosaAI:RNGD:00001");
+	rngd_other_name.value.hardware_module_name.val.p = mbedtls_calloc(1, rngd_other_name.value.hardware_module_name.val.len);
+	memcpy(rngd_other_name.value.hardware_module_name.val.p, "FuriosaAI:RNGD:00001", rngd_other_name.value.hardware_module_name.val.len); 
+
+	{
+		size_t buflen = 0;
+		size_t len = 0;
+		unsigned char *san_buf;
+		unsigned char *p;
+
+		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //oid
+		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //val
+		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //for val
+
+		CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.oid.len);
+		CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.val.len);
+		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //other name
+		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //san
+
+		san_buf = mbedtls_calloc(1, buflen);
+		if (san_buf == NULL) {
+			return MBEDTLS_ERR_ASN1_ALLOC_FAILED;
+		}
+		p = san_buf + buflen;
+
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_raw_buffer(&p, san_buf, 
+			rngd_other_name.value.hardware_module_name.val.p, 
+			rngd_other_name.value.hardware_module_name.val.len)); 
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, 
+			rngd_other_name.value.hardware_module_name.val.len)); 
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf,
+					MBEDTLS_ASN1_UTF8_STRING));
+
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
+
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_oid(&p, san_buf, 
+			(char*)rngd_other_name.value.hardware_module_name.oid.p, 
+			rngd_other_name.value.hardware_module_name.oid.len)); 
+		
+
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_X509_SAN_OTHER_NAME | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
+
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+
+		ret = mbedtls_x509write_crt_set_extension(&crt, MBEDTLS_OID_SUBJECT_ALT_NAME, MBEDTLS_OID_SIZE(MBEDTLS_OID_SUBJECT_ALT_NAME),
+				0, san_buf + buflen - len, len);
+cleanup:
+    mbedtls_free(san_buf);
+	}
+
+	/*
+	 * 2.5. Writing the certificate
 	 */
 	mbedtls_printf("  . Writing the certificate...");
 	fflush(stdout);
 
 	if ((ret = write_certificate(&crt, RNGD_CERT_APP_DEFAULT_CRT_OUTPUT_FILENAME,
-					mbedtls_ctr_drbg_random, &ctr_drbg)) != 0) {
+					mbedtls_ctr_drbg_random, &ctr_drbg, FORMAT_PEM)) != 0) {
 		mbedtls_strerror(ret, buf, sizeof(buf));
 		mbedtls_printf(" failed\n  !  write_certificate -0x%04x - %s\n\n",
 				(unsigned int) -ret, buf);
@@ -455,6 +529,7 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	mbedtls_printf(" ok\n");
 
 	exit_code = MBEDTLS_EXIT_SUCCESS;
+
 
 exit:
 
