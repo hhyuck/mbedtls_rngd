@@ -189,7 +189,11 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	size_t serial_len;
 	mbedtls_asn1_sequence *ext_key_usage, *ext_key_usage_tmp;
 	mbedtls_asn1_sequence **tail = &ext_key_usage;
-	mbedtls_x509_san_other_name rngd_other_name;
+	mbedtls_x509_san_other_name rngd_other_name; 
+	size_t buflen = 0;
+	size_t len = 0;
+	unsigned char *san_buf;
+	unsigned char *p;
 
 	mbedtls_x509write_csr_init(&req);
 	mbedtls_pk_init(&key);
@@ -446,8 +450,6 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	/*
 	 * 2.4 X509v3 Subject Alternative Name
 	 */
-	
-
 	rngd_other_name.type_id.tag = MBEDTLS_ASN1_OID;
 	rngd_other_name.type_id.len = MBEDTLS_OID_SIZE(MBEDTLS_OID_ON_HW_MODULE_NAME);
 	rngd_other_name.type_id.p = mbedtls_calloc(1, rngd_other_name.type_id.len);
@@ -463,54 +465,49 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 	rngd_other_name.value.hardware_module_name.val.p = mbedtls_calloc(1, rngd_other_name.value.hardware_module_name.val.len);
 	memcpy(rngd_other_name.value.hardware_module_name.val.p, "FuriosaAI:RNGD:00001", rngd_other_name.value.hardware_module_name.val.len); 
 
-	{
-		size_t buflen = 0;
-		size_t len = 0;
-		unsigned char *san_buf;
-		unsigned char *p;
+	CHECK_OVERFLOW_ADD(buflen, 4 + 1); //oid
+	CHECK_OVERFLOW_ADD(buflen, 4 + 1); //val
+	CHECK_OVERFLOW_ADD(buflen, 4 + 1); //for val
 
-		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //oid
-		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //val
-		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //for val
+	CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.oid.len);
+	CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.val.len);
+	CHECK_OVERFLOW_ADD(buflen, 4 + 1); //other name
+	CHECK_OVERFLOW_ADD(buflen, 4 + 1); //san
 
-		CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.oid.len);
-		CHECK_OVERFLOW_ADD(buflen, rngd_other_name.value.hardware_module_name.val.len);
-		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //other name
-		CHECK_OVERFLOW_ADD(buflen, 4 + 1); //san
-
-		san_buf = mbedtls_calloc(1, buflen);
-		if (san_buf == NULL) {
-			return MBEDTLS_ERR_ASN1_ALLOC_FAILED;
-		}
-		p = san_buf + buflen;
-
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_raw_buffer(&p, san_buf, 
-			rngd_other_name.value.hardware_module_name.val.p, 
-			rngd_other_name.value.hardware_module_name.val.len)); 
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, 
-			rngd_other_name.value.hardware_module_name.val.len)); 
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf,
-					MBEDTLS_ASN1_UTF8_STRING));
-
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
-
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_oid(&p, san_buf, 
-			(char*)rngd_other_name.value.hardware_module_name.oid.p, 
-			rngd_other_name.value.hardware_module_name.oid.len)); 
-		
-
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_X509_SAN_OTHER_NAME | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
-
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
-		MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-
-		ret = mbedtls_x509write_crt_set_extension(&crt, MBEDTLS_OID_SUBJECT_ALT_NAME, MBEDTLS_OID_SIZE(MBEDTLS_OID_SUBJECT_ALT_NAME),
-				0, san_buf + buflen - len, len);
-cleanup:
-    mbedtls_free(san_buf);
+	san_buf = mbedtls_calloc(1, buflen);
+	if (san_buf == NULL) {
+		return MBEDTLS_ERR_ASN1_ALLOC_FAILED;
 	}
+	p = san_buf + buflen;
+
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_raw_buffer(&p, san_buf, 
+				rngd_other_name.value.hardware_module_name.val.p, 
+				rngd_other_name.value.hardware_module_name.val.len)); 
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, 
+				rngd_other_name.value.hardware_module_name.val.len)); 
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf,
+				MBEDTLS_ASN1_UTF8_STRING));
+
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
+
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_oid(&p, san_buf, 
+				(char*)rngd_other_name.value.hardware_module_name.oid.p, 
+				rngd_other_name.value.hardware_module_name.oid.len)); 
+
+
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_X509_SAN_OTHER_NAME | MBEDTLS_ASN1_CONTEXT_SPECIFIC));
+
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_len(&p, san_buf, len));
+	MBEDTLS_ASN1_CHK_CLEANUP_ADD(len, mbedtls_asn1_write_tag(&p, san_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+
+	ret = mbedtls_x509write_crt_set_extension(&crt, MBEDTLS_OID_SUBJECT_ALT_NAME, MBEDTLS_OID_SIZE(MBEDTLS_OID_SUBJECT_ALT_NAME),
+			0, san_buf + buflen - len, len);
+cleanup:
+	mbedtls_free(san_buf);
+	if(ret < 0)
+		goto exit;
 
 	/*
 	 * 2.5. Writing the certificate
