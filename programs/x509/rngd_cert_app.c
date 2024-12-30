@@ -504,11 +504,6 @@ int main(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 
 	ret = mbedtls_x509write_crt_set_extension(&crt, MBEDTLS_OID_SUBJECT_ALT_NAME, MBEDTLS_OID_SIZE(MBEDTLS_OID_SUBJECT_ALT_NAME),
 			0, san_buf + buflen - len, len);
-cleanup:
-	mbedtls_free(san_buf);
-	if(ret < 0)
-		goto exit;
-
 	/*
 	 * 2.5. Writing the certificate
 	 */
@@ -527,6 +522,8 @@ cleanup:
 
 	exit_code = MBEDTLS_EXIT_SUCCESS;
 
+cleanup:
+	mbedtls_free(san_buf);
 
 exit:
 
